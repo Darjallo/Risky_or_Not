@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: intent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: intent
+  template:
+    metadata:
+      labels:
+        app: intent
+    spec:
+      containers:
+        - name: intent
+          image: ethelflow:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "ethelflow.agents.intent"]
+          env:
+            - name: ETHELFLOW_INFERENCE_CLASS
+              value: low_latency
+
+            - name: ETHELFLOW_MODEL_CATALOG_PATH
+              value: /etc/ethelflow/catalog.yaml
+
+            - name: ETHELFLOW_PROVIDER_ETHZ_AZURE_OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: ethz-azure-openai-secrets
+                  key: api_key
+
+          volumeMounts:
+            - name: model-catalog
+              mountPath: /etc/ethelflow
+              readOnly: true
+
+      volumes:
+        - name: model-catalog
+          configMap:
+            name: ethelflow-model-catalog
+            items:
+              - key: catalog.yaml
+                path: catalog.yaml
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: intent
+spec:
+  selector:
+    app: intent
+  ports:
+    - protocol: TCP
+      port: 8000
+      targetPort: 8000
+  type: ClusterIP
+

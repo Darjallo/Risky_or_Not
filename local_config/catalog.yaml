@@ -1,0 +1,37 @@
+version: 1
+
+providers:
+  openai_public:
+    kind: openai_public
+    endpoint: https://api.openai.com/v1
+    # base_url: https://api.openai.com/v1
+
+embeddings:
+  spaces:
+    ada3_large:
+      dimension: 3072
+      store:
+        table: ada3_large
+      notes: "OpenAI text-embedding-3-large (3072-d)."
+
+inference:
+  classes:
+    reasoning:
+      interface: chat_completions
+    low_latency:
+      interface: chat_completions
+
+tenants:
+  ethz:
+    embeddings:
+      default_space: ada3_large
+      provider: openai_public
+      deployment: text-embedding-3-large
+
+    inference:
+      reasoning:
+        provider: openai_public
+        deployment: gpt-4o-mini
+      low_latency:
+        provider: openai_public
+        deployment: gpt-4o-mini

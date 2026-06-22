@@ -1,0 +1,73 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ethelflow-executor
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ethelflow-executor-role
+  namespace: default
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "delete"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ethelflow-executor-rolebinding
+  namespace: default
+subjects:
+  - kind: ServiceAccount
+    name: ethelflow-executor
+    namespace: default
+roleRef:
+  kind: Role
+  name: ethelflow-executor-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: executor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: executor
+  template:
+    metadata:
+      labels:
+        app: executor
+    spec:
+      serviceAccountName: ethelflow-executor
+      containers:
+        - name: executor
+          image: ethelflow:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "ethelflow.agents.executor"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: executor
+spec:
+  selector:
+    app: executor
+  ports:
+    - protocol: TCP
+      port: 8000
+      targetPort: 8000
+  type: ClusterIP

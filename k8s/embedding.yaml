@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: embedding
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: embedding
+  template:
+    metadata:
+      labels:
+        app: embedding
+    spec:
+      containers:
+        - name: embedding
+          image: ethelflow:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "ethelflow.agents.embedding"]
+          env:
+            # Catalog mount location
+            - name: ETHELFLOW_MODEL_CATALOG_PATH
+              value: /etc/ethelflow/catalog.yaml
+
+            # Provider API key for provider "ethz_azure_openai"
+            - name: ETHELFLOW_PROVIDER_ETHZ_AZURE_OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: ethz-azure-openai-secrets
+                  key: api_key
+
+            # Optional fallback (only used if request/context does not specify a space)
+            - name: ETHELFLOW_DEFAULT_EMBEDDING_SPACE
+              value: ada3_large
+
+          volumeMounts:
+            - name: model-catalog
+              mountPath: /etc/ethelflow
+              readOnly: true
+
+      volumes:
+        - name: model-catalog
+          configMap:
+            name: ethelflow-model-catalog
+            items:
+              - key: catalog.yaml
+                path: catalog.yaml
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: embedding
+spec:
+  selector:
+    app: embedding
+  ports:
+    - protocol: TCP
+      port: 8000
+      targetPort: 8000
+  type: ClusterIP
+

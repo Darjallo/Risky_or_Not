@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: store-vectors
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: store-vectors
+  template:
+    metadata:
+      labels:
+        app: store-vectors
+    spec:
+      containers:
+        - name: store-vectors
+          image: ethelflow:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "ethelflow.agents.store_vectors"]
+          env:
+            # Model catalog mount location (used to resolve tenant/space -> store table, etc.)
+            - name: ETHELFLOW_MODEL_CATALOG_PATH
+              value: /etc/ethelflow/catalog.yaml
+
+            # Postgres connection (store-vectors persists embeddings)
+            - name: ETHELFLOW_POSTGRES_HOST
+              value: postgres
+            - name: ETHELFLOW_POSTGRES_PORT
+              value: "5432"
+            - name: ETHELFLOW_POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_DB
+            - name: ETHELFLOW_POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_USER
+            - name: ETHELFLOW_POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_PASSWORD
+
+          volumeMounts:
+            - name: model-catalog
+              mountPath: /etc/ethelflow
+              readOnly: true
+
+      volumes:
+        - name: model-catalog
+          configMap:
+            name: ethelflow-model-catalog
+            items:
+              - key: catalog.yaml
+                path: catalog.yaml
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: store-vectors
+spec:
+  selector:
+    app: store-vectors
+  ports:
+    - protocol: TCP
+      port: 8000
+      targetPort: 8000
+  type: ClusterIP
+

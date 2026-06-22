@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ethelflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ethelflow
+  template:
+    metadata:
+      labels:
+        app: ethelflow
+    spec:
+      containers:
+        - name: ethelflow
+          image: ethelflow:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "ethelflow"]
+          env:
+            - name: ETHELFLOW_S3_ENDPOINT_URL
+              value: http://minio:9000
+            - name: ETHELFLOW_S3_ACCESS_KEY
+              value: minio
+            - name: ETHELFLOW_S3_SECRET_KEY
+              value: minio123
+            - name: ETHELFLOW_S3_BUCKET_NAME
+              value: ethel
+            - name: ETHELFLOW_POSTGRES_HOST
+              value: postgres
+            - name: ETHELFLOW_POSTGRES_PORT
+              value: "5432"
+            - name: ETHELFLOW_POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_DB
+            - name: ETHELFLOW_POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_USER
+            - name: ETHELFLOW_POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_PASSWORD
+          ports:
+            - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ethelflow
+spec:
+  selector:
+    app: ethelflow
+  ports:
+    - protocol: TCP
+      port: 8080
+      targetPort: 8080
+  type: ClusterIP

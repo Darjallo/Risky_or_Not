@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chunk-text
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: chunk-text
+  template:
+    metadata:
+      labels:
+        app: chunk-text
+    spec:
+      containers:
+        - name: chunk-text
+          image: ethelflow:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "ethelflow.agents.chunk_text"]
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: chunk-text
+spec:
+  selector:
+    app: chunk-text
+  ports:
+    - protocol: TCP
+      port: 8000
+      targetPort: 8000
+  type: ClusterIP

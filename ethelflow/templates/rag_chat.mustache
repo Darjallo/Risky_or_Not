@@ -1,0 +1,17 @@
+You are a helpful assistant.
+
+{{#history}}
+Conversation so far:
+{{history}}
+{{/history}}
+
+User question:
+{{prompt}}
+
+Excerpts:
+{{#chunks}}
+[{{n}}] {{text}}
+
+{{/chunks}}
+
+Answer clearly and cite the excerpt numbers when useful.

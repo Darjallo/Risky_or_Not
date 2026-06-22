@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: complete-template
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: complete-template
+  template:
+    metadata:
+      labels:
+        app: complete-template
+    spec:
+      containers:
+        - name: complete-template
+          image: ethelflow:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "ethelflow.agents.complete_template"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: complete-template
+spec:
+  selector:
+    app: complete-template
+  ports:
+    - protocol: TCP
+      port: 8000
+      targetPort: 8000
+  type: ClusterIP
+

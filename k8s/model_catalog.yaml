@@ -1,0 +1,129 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ethelflow-model-catalog
+data:
+  # This ConfigMap stores a *single* YAML document (the model catalog)
+  # under the key "catalog.yaml". Your code should read this key's content.
+  #
+  # Typical patterns:
+  # - mount as a file and read /etc/ethelflow/catalog.yaml
+  # - or read the ConfigMap via the K8s API (less common)
+  catalog.yaml: |
+    version: 1
+
+    # Providers describe *how to call* a backend model service.
+    # IMPORTANT (Option A):
+    # - The provider contains the *endpoint value* directly (NOT an env var name).
+    # - Secrets are referenced by (name,key), never embedded here.
+    providers:
+      ethz_azure_openai:
+        kind: azure_openai
+
+        # Azure OpenAI resource endpoint (value, not env var name).
+        # Example format: https://<resource-name>.openai.azure.com/
+        endpoint: https://cog-openai-ethel.openai.azure.com/
+
+        # Reference to a K8s Secret that contains the API key (base64 in Secret manifest).
+        # The secret should live in the same namespace as the pods using it.
+        api_key_secret_ref:
+          name: ethz-azure-openai-secrets
+          key: api_key
+
+      # Example of a second provider (commented out). Keep providers small and reusable.
+      # openai_public:
+      #   kind: openai
+      #   base_url: https://api.openai.com/v1
+      #   api_key_secret_ref:
+      #     name: openai-secrets
+      #     key: api_key
+
+    # Canonical definitions of embedding “spaces”.
+    # Store-vectors (and later retrieval/query) must treat embeddings from different
+    # spaces as *incompatible* unless you explicitly build a bridge/migration.
+    #
+    # The "dimension" must match what the backend actually returns.
+    #
+    # ************** IMPORTANT ******************
+    # Each embedding needs to have its own database table, corresponding to
+    #  store:
+    #    table: <name_of_table>
+    # After addding a new embedding, from the project root, run
+    # ./update_embedding_dbs.py
+    # This will generate an Alembic revision
+    # Then run
+    # alembic upgrade head
+    # for the table to be established
+    embeddings:
+      spaces:
+        # Example legacy space (commented out)
+        # ada2:
+        #   dimension: 1536
+        #   store:
+        #     table: ada2
+        #   notes: "Legacy space. Incompatible with 3-large."
+
+        ada3_large:
+          dimension: 3072
+          store:
+            # The name of the database table for this embedding
+            table: ada3_large
+          notes: "Text embedding space for current default tenants (3072-d)."
+
+    # Inference “classes” are stable names used by flows and higher-level code.
+    # Tenants map these classes to actual provider deployments.
+    #
+    # This keeps flows from hardcoding ever-changing model/deployment names.
+    inference:
+      classes:
+        # fast_text:
+        #   interface: chat_completions
+        reasoning:
+          interface: chat_completions
+
+        low_latency:
+          interface: chat_completions
+
+        # You can extend later:
+        # video_generate:
+        #   interface: responses   # or whatever interface your backend uses
+
+    # Tenant routing chooses:
+    #  - which embedding space is the tenant default
+    #  - which provider+deployment to use for embeddings
+    #  - which provider+deployment to use for each inference class
+    #
+    # IMPORTANT:
+    # - "deployment" here is the Azure *deployment name* (not OpenAI "model" name).
+    # - You can switch providers/deployments per tenant without changing flows.
+    tenants:
+      ethz:
+        # Embedding routing for this tenant
+        embeddings:
+          # The default embedding space for new embeddings for this tenant.
+          default_space: ada3_large
+
+          # Which provider definition to use for embeddings
+          provider: ethz_azure_openai
+
+          # Azure OpenAI embedding deployment name (configured in Azure)
+          deployment: EthelEmb3large
+
+        # Inference routing for this tenant
+        inference:
+          reasoning:
+            provider: ethz_azure_openai
+            deployment: Ethel_5
+
+          low_latency:
+            provider: ethz_azure_openai
+            deployment: Ethel_41_mini
+
+
+
+        # Optional: you could add overrides per class:
+        # inference:
+        #   fast_text:
+        #     provider: ethz_azure_openai
+        #     deployment: Ethel_4o_mini
+

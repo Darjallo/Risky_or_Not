@@ -1,0 +1,27 @@
+pandas
+fastapi >= 0.115.12, == 0.115.*
+langgraph >= 0.6.7, == 0.6.*
+langchain >= 0.3.27, == 0.3.*
+langchain-community >= 0.3.27, == 0.3.*
+langgraph-checkpoint-postgres >= 2.0.23, == 2.0.*
+pydantic >= 2.11.6, == 2.11.*
+pydantic-settings >= 2.9.1, == 2.9.*
+uvicorn >= 0.34.3, == 0.34.*
+ruff >= 0.11.13, == 0.11.*
+openai >= 1.86.0, == 1.86.*
+pgvector >= 0.4.1, == 0.4.*
+psycopg[binary,pool] >= 3.2.9, == 3.2.*
+kubernetes-asyncio >= 33.1.0, == 33.*
+sqlmodel >= 0.0.24, == 0.0.*
+alembic >= 1.16.4, == 1.16.*
+boto3 >= 1.40.21, == 1.40.*
+python-multipart >= 0.0.20, == 0.0.*
+pypdf >= 6.0.0, == 6.0.*
+python-magic >= 0.4.27, == 0.4.*
+asyncpg >= 0.30.0, == 0.30.*
+beautifulsoup4 >= 4.14.2, == 4.14.*
+aiobotocore >= 2.25.1, == 2.25.*
+Markdown >= 3.6, == 3.*
+pymupdf >= 1.26.3, == 1.26.*
+chevron>=0.14
+Pillow >= 10.4.0, == 10.*
