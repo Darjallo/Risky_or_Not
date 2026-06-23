@@ -138,6 +138,7 @@ class InvestigationState(TypedDict, total=False):
     source_labels: List[str]
     
     target_document_filter: Optional[str]
+    question_sub_type: Optional[Literal["historical_case", "methodology", "case_specific"]]
     
     # prompt construction
     template: Optional[str]

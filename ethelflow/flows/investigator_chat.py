@@ -299,6 +299,8 @@ def build_initial_state(context: Dict[str, Any]) -> InvestigationState:
 def router_prompt_node(state: InvestigationState) -> InvestigationState:
     user = state["last_user_msg"].strip()
     lowered = user.lower()
+    
+    contains_historical_keyword = "ehec" in lowered or "2011" in lowered
 
     # Cheap high-confidence shortcuts before LLM routing.
     if any(x in lowered for x in ["final answer", "gold standard", "answer key", "solution report", "hidden report"]):
@@ -362,9 +364,15 @@ Important distinction:
 
 Additionally, determine if the user is asking a question specifically restricted to a single document, file, or source mentioned by name (e.g., "What does paper.pdf say about...", "In the lab_results report, what was...").
 
+Additionally, classify the sub-type context of the question to determine document scoping:
+- "historical_case": If the user explicitly mentions, asks about, or references old historical outbreaks (e.g., EHEC, 2011 outbreak, historical precedents).
+- "methodology": If the user asks about abstract methods, strategies, investigation approaches, scientific mechanisms, or how traceback works in general.
+- "case_specific": If the user is asking strictly about the current active case investigation facts, data, or setup without referencing general methodologies or past history.
+
 Return your response in exactly this format:
 Intent: <label>
-Target Document: <extracted file name or None if general question>
+Sub-Type: <historical_case | methodology | case_specific>
+Target Document: <extracted file name or None>
 
 Message:
 {user}
@@ -376,24 +384,32 @@ Message:
 def router_label_node(state: InvestigationState) -> InvestigationState:
     raw_output = (state.get("router_raw_output") or "").strip()
     
-    # Default fallbacks
+    user_msg_lowered = (state.get("last_user_msg") or "").lower()
+    
     intent = "general_chat"
+    sub_type = "case_specific"
     target_doc = None
 
     # Simple line parsing
     for line in raw_output.splitlines():
         if line.lower().startswith("intent:"):
             intent = line.split(":", 1)[1].strip().lower()
+        elif line.lower().startswith("sub-type:"):
+            sub_type = line.split(":", 1)[1].strip().lower()
         elif line.lower().startswith("target document:"):
             doc_val = line.split(":", 1)[1].strip()
             if doc_val.lower() != "none":
                 target_doc = doc_val
 
+    if "ehec" in user_msg_lowered or "2011" in user_msg_lowered:
+        sub_type = "historical_case"
+        
     allowed_intents = {"advance_stage", "task_question", "evidence_question", "hypothesis_submission", "hidden_info_request", "general_chat"}
     if intent not in allowed_intents:
         intent = "general_chat"
 
     state["intent"] = intent
+    state["question_sub_type"] = sub_type
     state["target_document_filter"] = target_doc
     return state
 
@@ -401,23 +417,31 @@ def access_policy_node(state: InvestigationState) -> InvestigationState:
     """Build allowed_document_ids for this turn, applying fuzzy document-specific filters if requested."""
     current_stage = int(state.get("current_stage", 0))
     intent = state.get("intent", "general_chat")
-    target_filter = state.get("target_document_filter")  # E.g., "Situationsbat"
+    sub_type = state.get("question_sub_type", "case_specific")
+    target_filter = state.get("target_document_filter") 
 
     task_docs = _as_list(state.get("task_description_document_ids", []))
     approach_docs = _as_list(state.get("problem_approach_document_ids", []))
+    old_case_docs = _as_list(state.get("old_resolved_case_document_ids", []))
     literature_docs = _as_list(state.get("scientific_literature_document_ids", []))
     stage_docs = _stage_docs_up_to(state.get("investigation_stage_documents", {}), current_stage)
     gold_docs = _as_list(state.get("gold_standard_document_ids", []))
 
     # Determine baseline allowed scope based on intent
+    allowed = []
     if intent == "task_question":
         allowed = task_docs + approach_docs
         state["retrieval_scope"] = "task_only"
     elif intent in {"evidence_question", "general_chat"}:
-        allowed = task_docs + approach_docs + literature_docs + stage_docs
+        if sub_type == "historical_case":
+            allowed = approach_docs + literature_docs + old_case_docs
+        elif sub_type == "methodology":
+            allowed = approach_docs + literature_docs + task_docs + stage_docs
+        else:
+            allowed = task_docs + stage_docs
         state["retrieval_scope"] = "student_visible"
     elif intent == "hypothesis_submission":
-        allowed = task_docs + stage_docs
+        allowed = task_docs + stage_docs + gold_docs
         state["retrieval_scope"] = "evaluation"
     else:
         allowed = []
@@ -425,6 +449,9 @@ def access_policy_node(state: InvestigationState) -> InvestigationState:
 
     # Strict Gatekeeping: Never allow the gold standard in student-visible searches
     allowed = [doc for doc in allowed if doc not in set(gold_docs)]
+
+    # Preserve baseline allowed items in case filtering yields no registered matches
+    baseline_allowed = list(allowed)
 
     # --- APPLY FUZZY SPECIFIC DOCUMENT FILTER ---
     if target_filter and allowed:
@@ -437,30 +464,29 @@ def access_policy_node(state: InvestigationState) -> InvestigationState:
             if doc_name and (target_clean in doc_name or doc_name in target_clean):
                 matched_doc_ids.append(doc_id)
 
-        # 2. Second Pass: If no direct substring matches (e.g., due to typos like "Situationsbat"),
-        # use fuzzy string close matching across the filenames of unlocked documents
+        # 2. Second Pass: Fuzzy string matching
         if not matched_doc_ids:
-            # Build a temporary reverse mapping for currently allowed documents
             current_name_to_id = {
                 DOCUMENT_NAME_REGISTRY[doc_id].lower(): doc_id 
                 for doc_id in allowed if doc_id in DOCUMENT_NAME_REGISTRY
             }
             
-            # Find the closest match among available filenames (cutoff 0.4 handles bad typos)
             closest_names = difflib.get_close_matches(
                 target_clean, current_name_to_id.keys(), n=1, cutoff=0.4
             )
             if closest_names:
                 matched_doc_ids.append(current_name_to_id[closest_names[0]])
 
-        # If we successfully resolved the user's partial text to an active document, restrict scope
+        # If we successfully resolved the user's text to a registered document, isolate it
         if matched_doc_ids:
             allowed = matched_doc_ids
             print(f"DEBUG: Restricted search strictly to document IDs: {allowed}", flush=True)
         else:
-            # Security fallback: If they are requesting a specific file name that can't be found
-            # or isn't unlocked yet for their stage, empty the list to prevent leaking other files.
-            allowed = []
+            # IMPROVEMENT FALLBACK: If the file name is unregistered (e.g. dynamic stage docs),
+            # retain all currently unlocked stage/task documents so the vector search engine
+            # can locate the information semantically via text chunk matching.
+            allowed = baseline_allowed
+            print(f"DEBUG: Target filter '{target_filter}' did not match registry. Falling back to full allowed stage scope.", flush=True)
 
     # Deduplicate while preserving order
     seen = set()
@@ -475,66 +501,6 @@ def access_policy_node(state: InvestigationState) -> InvestigationState:
     state["blocked_document_ids"] = gold_docs + _stage_docs_exact(state.get("investigation_stage_documents", {}), current_stage + 1)
     
     return state
-
-# def access_policy_node(state: InvestigationState) -> InvestigationState:
-#     """Build allowed_document_ids for this turn. This is the main leakage-prevention layer."""
-#     current_stage = int(state.get("current_stage", 0))
-#     intent = state.get("intent", "general_chat")
-
-#     task_docs = _as_list(state.get("task_description_document_ids", []))
-#     approach_docs = _as_list(state.get("problem_approach_document_ids", []))
-#     old_case_docs = _as_list(state.get("old_resolved_case_document_ids", []))
-#     literature_docs = _as_list(state.get("scientific_literature_document_ids", []))
-#     stage_docs = _stage_docs_up_to(state.get("investigation_stage_documents", {}), current_stage)
-#     fallback_docs = _as_list(state.get("fallback_document_ids", []))
-#     gold_docs = _as_list(state.get("gold_standard_document_ids", []))
-
-#     if intent == "task_question":
-#         allowed = task_docs + approach_docs
-#         state["retrieval_scope"] = "task_only"
-#     elif intent in {"evidence_question", "general_chat"}:
-#         allowed = task_docs + approach_docs + literature_docs + stage_docs
-#         state["retrieval_scope"] = "student_visible"
-#     elif intent == "hypothesis_submission":
-#         allowed = task_docs + stage_docs + gold_docs
-#         state["retrieval_scope"] = "evaluation"
-#         state["submitted_hypothesis"] = state.get("last_user_msg", "")
-#     else:
-#         allowed = []
-#         state["retrieval_scope"] = "none"
-
-#     # Backward-compatible fallback: useful while you transition contexts.
-#     if not allowed and fallback_docs and intent not in {"hidden_info_request", "advance_stage"}:
-#         allowed = fallback_docs
-
-#     # Never allow the gold standard in student-facing retrieval.
-#     allowed = [doc for doc in allowed if doc not in set(gold_docs)]
-
-#     # Deduplicate while preserving order.
-#     seen = set()
-#     allowed_unique = []
-#     for doc in allowed:
-#         if doc not in seen:
-#             seen.add(doc)
-#             allowed_unique.append(doc)
-
-#     state["allowed_document_ids"] = allowed_unique
-#     state["investigation_data_document_ids"] = stage_docs
-#     state["blocked_document_ids"] = gold_docs + _stage_docs_exact(state.get("investigation_stage_documents", {}), current_stage + 1)
-    
-#     # print("DEBUG access_policy intent =", intent, flush=True)
-#     # print("DEBUG access_policy current_stage =", current_stage, flush=True)
-#     # print("DEBUG access_policy task_docs =", task_docs, flush=True)
-#     # print("DEBUG access_policy approach_docs =", approach_docs, flush=True)
-#     # print("DEBUG access_policy old_case_docs =", old_case_docs, flush=True)
-#     # print("DEBUG access_policy literature_docs =", literature_docs, flush=True)
-#     # print("DEBUG access_policy stage_docs =", stage_docs, flush=True)
-#     # print("DEBUG access_policy gold_docs =", gold_docs, flush=True)
-#     # print("DEBUG access_policy allowed_document_ids =", state.get("allowed_document_ids"), flush=True)
-#     # print("DEBUG access_policy blocked_document_ids =", state.get("blocked_document_ids"), flush=True)
-#     # print("DEBUG access_policy retrieval_scope =", state.get("retrieval_scope"), flush=True)
-#     return state
-
     
 def stage_update_node(state: InvestigationState) -> InvestigationState:
     #user = state.get("last_user_msg", "")
