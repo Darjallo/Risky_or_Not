@@ -137,6 +137,8 @@ class InvestigationState(TypedDict, total=False):
     chunk_metadata: List[Dict[str, Any]]
     source_labels: List[str]
     
+    target_document_filter: Optional[str]
+    
     # prompt construction
     template: Optional[str]
     template_path: Optional[str]

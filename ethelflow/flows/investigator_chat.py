@@ -21,6 +21,7 @@ from __future__ import annotations
 from typing import Dict, Any, Optional, List, Literal
 import uuid
 import re
+import difflib
 from langgraph.graph import StateGraph, END
 
 
@@ -37,6 +38,26 @@ from ethelflow.investigation.helpers import _extract_user_message, _as_list, \
 #from ethelflow.tutor.tutor_rag import prepare_template_fields, render_template, \
  #   prepare_prompt_list, prepare_history_text, prepare_query_embedding
 
+DOCUMENT_NAME_REGISTRY = {
+    "61ca0fd3-2ebd-43d4-b1c4-6e5b3df96862": "Situationsblatt_Tahini_Ausbruch.pdf",
+    "5cb00a90-5e7e-4910-8be8-d7451487b695": "EHEC_Abschlussbericht_2011_11_24.pdf",
+    "e9b1b8d3-0ff5-4595-9194-d54a7d1b5b94": "wissenschaftliche-bewertung-des-ehec-ausbruchsgeschehens-in-deutschland-im-mai-juni-2011.pdf",
+    "ef7b5d33-57aa-4cb1-b1ef-4ac4eb794961": "Literaturrecherche_Leitfaden.pdf",
+    "4ca3e7ac-a3b8-4071-a6e3-d8dcca1e8fe1": "10_Integrated_surveillance.pdf",
+    "8b4b96eb-0a16-40da-baa7-95f0d9accc02": "12_Crisis_communication.pdf",
+    # "ffd49663-fbee-4b95-a900-fc08402cc009",
+    # "5ba34cae-8112-41f9-9f5d-e6f492933396",
+    # "8cd75694-a69f-4bc3-8e29-78c890f1cd01",
+    # "cabc7124-0455-4329-b9ee-916fb9815f15",
+    # "2ad62e2f-7ff3-4992-b8db-31517ddcb5ee",
+    # "539f7f3d-942f-47b6-8f52-679776a73a22",
+    # "15f51137-eafd-4264-a6bc-fbb7233fd75e",
+    # "4088903d-a261-4014-9b7d-6306709830e4",
+    # "87e38de1-c7ac-4bf2-908d-19843bf0498f",
+    # "755d4f85-6fcf-402a-ab5a-6c6667209c22",
+    # "75ee5809-8fbb-40cc-b05c-6d08b0604384"
+    # Add any other document UUIDs and filenames here...
+}
 
 DEFAULT_CASE_ID = "food_contamination_case_01"
 DEFAULT_CASE_TITLE = "Food contamination investigation"
@@ -339,8 +360,11 @@ Important distinction:
 - The words "documents", "other documents", "sources", "files", or "materials" do NOT imply hidden information by themselves.
 - Use "hidden_info_request" only when the request clearly targets forbidden material: gold standard, answer key, final solution, hidden report, instructor-only notes, confidential information, or unreleased/future evidence.
 
+Additionally, determine if the user is asking a question specifically restricted to a single document, file, or source mentioned by name (e.g., "What does paper.pdf say about...", "In the lab_results report, what was...").
 
-Return ONLY the label.
+Return your response in exactly this format:
+Intent: <label>
+Target Document: <extracted file name or None if general question>
 
 Message:
 {user}
@@ -350,44 +374,42 @@ Message:
 
    
 def router_label_node(state: InvestigationState) -> InvestigationState:
-    if state.get("intent") in {
-        "advance_stage",
-        "task_question",
-        "evidence_question",
-        "hypothesis_submission",
-        "hidden_info_request",
-        "general_chat",
-    } and not state.get("router_raw_output"):
-        return state
+    raw_output = (state.get("router_raw_output") or "").strip()
+    
+    # Default fallbacks
+    intent = "general_chat"
+    target_doc = None
 
-    label = (state.get("router_raw_output") or "").strip().lower().splitlines()[0].strip()
-    allowed = {
-        "advance_stage",
-        "task_question",
-        "evidence_question",
-        "hypothesis_submission",
-        "hidden_info_request",
-        "general_chat",
-    }
-    if label not in allowed:
-        label = "general_chat"
-    state["intent"] = label
+    # Simple line parsing
+    for line in raw_output.splitlines():
+        if line.lower().startswith("intent:"):
+            intent = line.split(":", 1)[1].strip().lower()
+        elif line.lower().startswith("target document:"):
+            doc_val = line.split(":", 1)[1].strip()
+            if doc_val.lower() != "none":
+                target_doc = doc_val
+
+    allowed_intents = {"advance_stage", "task_question", "evidence_question", "hypothesis_submission", "hidden_info_request", "general_chat"}
+    if intent not in allowed_intents:
+        intent = "general_chat"
+
+    state["intent"] = intent
+    state["target_document_filter"] = target_doc
     return state
 
-
 def access_policy_node(state: InvestigationState) -> InvestigationState:
-    """Build allowed_document_ids for this turn. This is the main leakage-prevention layer."""
+    """Build allowed_document_ids for this turn, applying fuzzy document-specific filters if requested."""
     current_stage = int(state.get("current_stage", 0))
     intent = state.get("intent", "general_chat")
+    target_filter = state.get("target_document_filter")  # E.g., "Situationsbat"
 
     task_docs = _as_list(state.get("task_description_document_ids", []))
     approach_docs = _as_list(state.get("problem_approach_document_ids", []))
-    old_case_docs = _as_list(state.get("old_resolved_case_document_ids", []))
     literature_docs = _as_list(state.get("scientific_literature_document_ids", []))
     stage_docs = _stage_docs_up_to(state.get("investigation_stage_documents", {}), current_stage)
-    fallback_docs = _as_list(state.get("fallback_document_ids", []))
     gold_docs = _as_list(state.get("gold_standard_document_ids", []))
 
+    # Determine baseline allowed scope based on intent
     if intent == "task_question":
         allowed = task_docs + approach_docs
         state["retrieval_scope"] = "task_only"
@@ -395,21 +417,52 @@ def access_policy_node(state: InvestigationState) -> InvestigationState:
         allowed = task_docs + approach_docs + literature_docs + stage_docs
         state["retrieval_scope"] = "student_visible"
     elif intent == "hypothesis_submission":
-        allowed = task_docs + stage_docs + gold_docs
+        allowed = task_docs + stage_docs
         state["retrieval_scope"] = "evaluation"
-        state["submitted_hypothesis"] = state.get("last_user_msg", "")
     else:
         allowed = []
         state["retrieval_scope"] = "none"
 
-    # Backward-compatible fallback: useful while you transition contexts.
-    if not allowed and fallback_docs and intent not in {"hidden_info_request", "advance_stage"}:
-        allowed = fallback_docs
-
-    # Never allow the gold standard in student-facing retrieval.
+    # Strict Gatekeeping: Never allow the gold standard in student-visible searches
     allowed = [doc for doc in allowed if doc not in set(gold_docs)]
 
-    # Deduplicate while preserving order.
+    # --- APPLY FUZZY SPECIFIC DOCUMENT FILTER ---
+    if target_filter and allowed:
+        target_clean = target_filter.strip().lower()
+        matched_doc_ids = []
+
+        # 1. First Pass: Check for direct substring matching against the unlocked files
+        for doc_id in allowed:
+            doc_name = DOCUMENT_NAME_REGISTRY.get(doc_id, "").lower()
+            if doc_name and (target_clean in doc_name or doc_name in target_clean):
+                matched_doc_ids.append(doc_id)
+
+        # 2. Second Pass: If no direct substring matches (e.g., due to typos like "Situationsbat"),
+        # use fuzzy string close matching across the filenames of unlocked documents
+        if not matched_doc_ids:
+            # Build a temporary reverse mapping for currently allowed documents
+            current_name_to_id = {
+                DOCUMENT_NAME_REGISTRY[doc_id].lower(): doc_id 
+                for doc_id in allowed if doc_id in DOCUMENT_NAME_REGISTRY
+            }
+            
+            # Find the closest match among available filenames (cutoff 0.4 handles bad typos)
+            closest_names = difflib.get_close_matches(
+                target_clean, current_name_to_id.keys(), n=1, cutoff=0.4
+            )
+            if closest_names:
+                matched_doc_ids.append(current_name_to_id[closest_names[0]])
+
+        # If we successfully resolved the user's partial text to an active document, restrict scope
+        if matched_doc_ids:
+            allowed = matched_doc_ids
+            print(f"DEBUG: Restricted search strictly to document IDs: {allowed}", flush=True)
+        else:
+            # Security fallback: If they are requesting a specific file name that can't be found
+            # or isn't unlocked yet for their stage, empty the list to prevent leaking other files.
+            allowed = []
+
+    # Deduplicate while preserving order
     seen = set()
     allowed_unique = []
     for doc in allowed:
@@ -421,18 +474,66 @@ def access_policy_node(state: InvestigationState) -> InvestigationState:
     state["investigation_data_document_ids"] = stage_docs
     state["blocked_document_ids"] = gold_docs + _stage_docs_exact(state.get("investigation_stage_documents", {}), current_stage + 1)
     
-    # print("DEBUG access_policy intent =", intent, flush=True)
-    # print("DEBUG access_policy current_stage =", current_stage, flush=True)
-    # print("DEBUG access_policy task_docs =", task_docs, flush=True)
-    # print("DEBUG access_policy approach_docs =", approach_docs, flush=True)
-    # print("DEBUG access_policy old_case_docs =", old_case_docs, flush=True)
-    # print("DEBUG access_policy literature_docs =", literature_docs, flush=True)
-    # print("DEBUG access_policy stage_docs =", stage_docs, flush=True)
-    # print("DEBUG access_policy gold_docs =", gold_docs, flush=True)
-    # print("DEBUG access_policy allowed_document_ids =", state.get("allowed_document_ids"), flush=True)
-    # print("DEBUG access_policy blocked_document_ids =", state.get("blocked_document_ids"), flush=True)
-    # print("DEBUG access_policy retrieval_scope =", state.get("retrieval_scope"), flush=True)
     return state
+
+# def access_policy_node(state: InvestigationState) -> InvestigationState:
+#     """Build allowed_document_ids for this turn. This is the main leakage-prevention layer."""
+#     current_stage = int(state.get("current_stage", 0))
+#     intent = state.get("intent", "general_chat")
+
+#     task_docs = _as_list(state.get("task_description_document_ids", []))
+#     approach_docs = _as_list(state.get("problem_approach_document_ids", []))
+#     old_case_docs = _as_list(state.get("old_resolved_case_document_ids", []))
+#     literature_docs = _as_list(state.get("scientific_literature_document_ids", []))
+#     stage_docs = _stage_docs_up_to(state.get("investigation_stage_documents", {}), current_stage)
+#     fallback_docs = _as_list(state.get("fallback_document_ids", []))
+#     gold_docs = _as_list(state.get("gold_standard_document_ids", []))
+
+#     if intent == "task_question":
+#         allowed = task_docs + approach_docs
+#         state["retrieval_scope"] = "task_only"
+#     elif intent in {"evidence_question", "general_chat"}:
+#         allowed = task_docs + approach_docs + literature_docs + stage_docs
+#         state["retrieval_scope"] = "student_visible"
+#     elif intent == "hypothesis_submission":
+#         allowed = task_docs + stage_docs + gold_docs
+#         state["retrieval_scope"] = "evaluation"
+#         state["submitted_hypothesis"] = state.get("last_user_msg", "")
+#     else:
+#         allowed = []
+#         state["retrieval_scope"] = "none"
+
+#     # Backward-compatible fallback: useful while you transition contexts.
+#     if not allowed and fallback_docs and intent not in {"hidden_info_request", "advance_stage"}:
+#         allowed = fallback_docs
+
+#     # Never allow the gold standard in student-facing retrieval.
+#     allowed = [doc for doc in allowed if doc not in set(gold_docs)]
+
+#     # Deduplicate while preserving order.
+#     seen = set()
+#     allowed_unique = []
+#     for doc in allowed:
+#         if doc not in seen:
+#             seen.add(doc)
+#             allowed_unique.append(doc)
+
+#     state["allowed_document_ids"] = allowed_unique
+#     state["investigation_data_document_ids"] = stage_docs
+#     state["blocked_document_ids"] = gold_docs + _stage_docs_exact(state.get("investigation_stage_documents", {}), current_stage + 1)
+    
+#     # print("DEBUG access_policy intent =", intent, flush=True)
+#     # print("DEBUG access_policy current_stage =", current_stage, flush=True)
+#     # print("DEBUG access_policy task_docs =", task_docs, flush=True)
+#     # print("DEBUG access_policy approach_docs =", approach_docs, flush=True)
+#     # print("DEBUG access_policy old_case_docs =", old_case_docs, flush=True)
+#     # print("DEBUG access_policy literature_docs =", literature_docs, flush=True)
+#     # print("DEBUG access_policy stage_docs =", stage_docs, flush=True)
+#     # print("DEBUG access_policy gold_docs =", gold_docs, flush=True)
+#     # print("DEBUG access_policy allowed_document_ids =", state.get("allowed_document_ids"), flush=True)
+#     # print("DEBUG access_policy blocked_document_ids =", state.get("blocked_document_ids"), flush=True)
+#     # print("DEBUG access_policy retrieval_scope =", state.get("retrieval_scope"), flush=True)
+#     return state
 
     
 def stage_update_node(state: InvestigationState) -> InvestigationState:
@@ -934,6 +1035,7 @@ async def run(
         print("DEBUG post-router response_type =", out.get("response_type"), flush=True)
         
         print("DEBUG out intent =", out.get("intent"), flush=True)
+        print("DEBUG out target doc =", out.get("target_document_filter"), flush=True)
         
         print("DEBUG out response_type =", out.get("response_type"), flush=True)
         print("DEBUG out current_stage =", out.get("current_stage"), flush=True)
