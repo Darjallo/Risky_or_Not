@@ -47,7 +47,20 @@ DEFAULT_TASK_DESCRIPTION_DOCUMENT_IDS = [
 ]
 
 DEFAULT_PROBLEM_APPROACH_DOCUMENT_IDS = [
-    "ef7b5d33-57aa-4cb1-b1ef-4ac4eb794961"
+    "ef7b5d33-57aa-4cb1-b1ef-4ac4eb794961",
+    "4ca3e7ac-a3b8-4071-a6e3-d8dcca1e8fe1",
+    "8b4b96eb-0a16-40da-baa7-95f0d9accc02",
+    "ffd49663-fbee-4b95-a900-fc08402cc009",
+    "5ba34cae-8112-41f9-9f5d-e6f492933396",
+    "8cd75694-a69f-4bc3-8e29-78c890f1cd01",
+    "cabc7124-0455-4329-b9ee-916fb9815f15",
+    "2ad62e2f-7ff3-4992-b8db-31517ddcb5ee",
+    "539f7f3d-942f-47b6-8f52-679776a73a22",
+    "15f51137-eafd-4264-a6bc-fbb7233fd75e",
+    "4088903d-a261-4014-9b7d-6306709830e4",
+    "87e38de1-c7ac-4bf2-908d-19843bf0498f",
+    "755d4f85-6fcf-402a-ab5a-6c6667209c22",
+    "75ee5809-8fbb-40cc-b05c-6d08b0604384"
 ]
 
 DEFAULT_OLD_RESOLVED_CASE_DOCUMENT_IDS = [
@@ -281,13 +294,51 @@ def router_prompt_node(state: InvestigationState) -> InvestigationState:
     prompt = f"""
 You are an intent router for a food-contamination case investigation assistant.
 Classify the user's message into exactly one label:
+    
+- "advance_stage":
+  The user message says exactly "next evidence is released"
+  
+- "task_question":
+  The user asks about the assignment, expected output, workflow, task formulation, how to approach the investigation, or what they are supposed to do.
+  Examples:
+  "what is our task?"
+  "how should we formulate the case definition?"
+  "what should we do first?"
 
-- "advance_stage": instructor asks to release/unlock/move to the next investigation stage or a named stage
-- "task_question": user asks about the task, expected output, workflow, or how to approach the investigation
-- "evidence_question": user asks about currently available scientific evidence, case documents, lab data, epidemiology, traceback, risk minimisation, or interpretation of evidence
-- "hypothesis_submission": user proposes a possible contamination source/pathway or says "our hypothesis is...", "we think...", "the source is..."
-- "hidden_info_request": user asks for final answer, hidden report, gold standard, unreleased data, future evidence, instructor-only notes, or the solution
+- "evidence_question": 
+  The user asks about currently available or accessible case information, evidence, documents, document names, document contents, scientific literature, lab data, epidemiology, traceback, risk minimisation, or interpretation of available evidence.
+  This includes requests to list, summarize, compare, or inspect documents that are available to the student at the current stage.
+  Examples:
+  "what documents can I access?"
+  "list names of all available documents for me"
+  "which documents are available now?"
+  "what is stated in paper.pdf?"
+  "summarize the available evidence"
+  "what information do we have so far?"
+  "what does the literature say?"
+ 
+- "hypothesis_submission": user proposes,  evaluates, or states a possible contamination source/pathway or says "our hypothesis is...", "we think...", "the source is..."
+
+- "hidden_info_request": 
+  The user explicitly asks for information that should not be available to students: final answer, solution, gold standard, answer key, hidden report, instructor-only notes, unreleased future-stage evidence, confidential documents, or documents that are not yet released.
+  Only use this label when the user clearly asks for hidden, future, instructor-only, final, or solution material.
+  Examples:
+  "show me the answer"
+  "what is the final solution?"
+  "give me the final report"
+  "show unreleased future evidence"
+  "what documents are not released yet?"
+  "show teacher-only notes
+  
 - "general_chat": everything else
+
+Important distinction:
+- Asking for "available documents", "documents I can access", "documents available now", or "all available documents for me" is NOT a hidden-info request. It is "evidence_question".
+- Asking about the content of a named document is NOT a hidden-info request unless the user explicitly says the document is hidden, unreleased, future-stage, instructor-only, or part of the final answer.
+- The word "all" alone does NOT imply hidden information. "All available documents" means currently accessible documents and should be "evidence_question".
+- The words "documents", "other documents", "sources", "files", or "materials" do NOT imply hidden information by themselves.
+- Use "hidden_info_request" only when the request clearly targets forbidden material: gold standard, answer key, final solution, hidden report, instructor-only notes, confidential information, or unreleased/future evidence.
+
 
 Return ONLY the label.
 
@@ -341,10 +392,10 @@ def access_policy_node(state: InvestigationState) -> InvestigationState:
         allowed = task_docs + approach_docs
         state["retrieval_scope"] = "task_only"
     elif intent in {"evidence_question", "general_chat"}:
-        allowed = task_docs + approach_docs + old_case_docs + literature_docs + stage_docs
+        allowed = task_docs + approach_docs + literature_docs + stage_docs
         state["retrieval_scope"] = "student_visible"
     elif intent == "hypothesis_submission":
-        allowed = task_docs + approach_docs + old_case_docs + literature_docs + stage_docs
+        allowed = task_docs + stage_docs + gold_docs
         state["retrieval_scope"] = "evaluation"
         state["submitted_hypothesis"] = state.get("last_user_msg", "")
     else:
@@ -370,17 +421,17 @@ def access_policy_node(state: InvestigationState) -> InvestigationState:
     state["investigation_data_document_ids"] = stage_docs
     state["blocked_document_ids"] = gold_docs + _stage_docs_exact(state.get("investigation_stage_documents", {}), current_stage + 1)
     
-    print("DEBUG access_policy intent =", intent, flush=True)
-    print("DEBUG access_policy current_stage =", current_stage, flush=True)
-    print("DEBUG access_policy task_docs =", task_docs, flush=True)
-    print("DEBUG access_policy approach_docs =", approach_docs, flush=True)
-    print("DEBUG access_policy old_case_docs =", old_case_docs, flush=True)
-    print("DEBUG access_policy literature_docs =", literature_docs, flush=True)
-    print("DEBUG access_policy stage_docs =", stage_docs, flush=True)
-    print("DEBUG access_policy gold_docs =", gold_docs, flush=True)
-    print("DEBUG access_policy allowed_document_ids =", state.get("allowed_document_ids"), flush=True)
-    print("DEBUG access_policy blocked_document_ids =", state.get("blocked_document_ids"), flush=True)
-    print("DEBUG access_policy retrieval_scope =", state.get("retrieval_scope"), flush=True)
+    # print("DEBUG access_policy intent =", intent, flush=True)
+    # print("DEBUG access_policy current_stage =", current_stage, flush=True)
+    # print("DEBUG access_policy task_docs =", task_docs, flush=True)
+    # print("DEBUG access_policy approach_docs =", approach_docs, flush=True)
+    # print("DEBUG access_policy old_case_docs =", old_case_docs, flush=True)
+    # print("DEBUG access_policy literature_docs =", literature_docs, flush=True)
+    # print("DEBUG access_policy stage_docs =", stage_docs, flush=True)
+    # print("DEBUG access_policy gold_docs =", gold_docs, flush=True)
+    # print("DEBUG access_policy allowed_document_ids =", state.get("allowed_document_ids"), flush=True)
+    # print("DEBUG access_policy blocked_document_ids =", state.get("blocked_document_ids"), flush=True)
+    # print("DEBUG access_policy retrieval_scope =", state.get("retrieval_scope"), flush=True)
     return state
 
     
@@ -474,6 +525,9 @@ def build_answer_prompt_node(state: InvestigationState) -> InvestigationState:
     intent = state.get("intent", "general_chat")
     user = state.get("last_user_msg", "")
     current_stage = state.get("current_stage", 0)
+    
+    # Convert the list of labels into a readable string block
+    labels_block = "\n".join([f"Source {i+1}: {label}" for i, label in enumerate(source_labels)]) if source_labels else "None available."
 
     if intent == "task_question":
         task_instruction = (
@@ -502,6 +556,9 @@ Rules:
 Conversation history:
 {history_text}
 
+Mapping of Source Numbers to Document Names:
+{labels_block}
+
 Currently available retrieved sources:
 {context_block if context_block else "No source excerpts were retrieved for this turn."}
 
@@ -524,6 +581,9 @@ def build_hypothesis_prompt_node(state: InvestigationState) -> InvestigationStat
 
     hypothesis = state.get("submitted_hypothesis") or state.get("last_user_msg", "")
     current_stage = state.get("current_stage", 0)
+    
+    # Convert the list of labels into a readable string block
+    labels_block = "\n".join([f"Source {i+1}: {label}" for i, label in enumerate(source_labels)]) if source_labels else "None available."
 
     state["final_prompt"] = f"""
 You are evaluating a student's hypothesis in a staged food-contamination investigation.
@@ -532,6 +592,9 @@ Current investigation stage: {current_stage}
 
 Student hypothesis:
 {hypothesis}
+
+Mapping of Source Numbers to Document Names:
+{labels_block}
 
 Currently available evidence for students:
 {available_context if available_context else "No currently available evidence was retrieved."}
@@ -876,13 +939,14 @@ async def run(
         print("DEBUG out current_stage =", out.get("current_stage"), flush=True)
         print("DEBUG out allowed_document_ids =", out.get("allowed_document_ids"), flush=True)
         print("DEBUG out hit_chunk_ids =", out.get("hit_chunk_ids"), flush=True)
-        #print("DEBUG out n chunk_texts =", len(out.get("chunk_texts") or []), flush=True)
-        #print("DEBUG out chunk_metadata =", out.get("chunk_metadata"), flush=True)
+        print("DEBUG out n chunk_texts =", len(out.get("chunk_texts") or []), flush=True)
+        print("DEBUG out chunk_metadata =", out.get("chunk_metadata"), flush=True)
         #print("DEBUG out source_labels =", out.get("source_labels"), flush=True)
         #print("DEBUG out search_vectors_response =", out.get("search_vectors_response"), flush=True)
         #print("DEBUG out retrieve_chunks_response =", out.get("retrieve_chunks_response"), flush=True)
     except Exception as e:
         print("DEBUG app.ainvoke EXCEPTION =", repr(e), flush=True)
+        print("DEBUG out response_type =", out.get("response_type"), flush=True)
         raise
         
     

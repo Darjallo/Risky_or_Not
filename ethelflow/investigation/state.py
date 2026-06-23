@@ -146,6 +146,15 @@ class InvestigationState(TypedDict, total=False):
     reasoning_prompt: str
     reasoning_raw_output: str
     
+    gold_prompts: List[str]
+    gold_embeddings: List[str]
+    gold_query_embedding: List[str]
+    gold_hit_chunk_ids: List[str]
+    gold_chunk_texts: List[str]
+    gold_chunk_metadata: List[Dict[str, Any]]
+    gold_search_vectors_response: Dict[str, Any]
+    gold_retrieve_chunks_response: Dict[str, Any]
+    
     # hypothesis review
     submitted_hypothesis: Optional[str]
     hypothesis_review: HypothesisReview
